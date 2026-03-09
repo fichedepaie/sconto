@@ -1,9 +1,26 @@
+
 <!DOCTYPE html>
 <html lang="it">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <title>Sconti Subito</title>
+<meta name="theme-color" content="#0a0a0f">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Sconti Subito">
+<link rel="manifest" href="data:application/json,{
+  %22name%22:%22Sconti%20Subito%22,
+  %22short_name%22:%22Sconti%22,
+  %22description%22:%22Calcolatore%20sconti%20con%20camera%22,
+  %22start_url%22:%22.%22,
+  %22display%22:%22standalone%22,
+  %22background_color%22:%22%230a0a0f%22,
+  %22theme_color%22:%22%230a0a0f%22,
+  %22orientation%22:%22portrait%22,
+  %22icons%22:[{%22src%22:%22data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%20512%20512'%3E%3Crect%20width='512'%20height='512'%20rx='100'%20fill='%230a0a0f'/%3E%3Ctext%20x='256'%20y='340'%20font-size='300'%20text-anchor='middle'%3E%F0%9F%8F%B7%EF%B8%8F%3C/text%3E%3C/svg%3E%22,%22sizes%22:%22512x512%22,%22type%22:%22image/svg+xml%22,%22purpose%22:%22any%20maskable%22}]
+}">
 <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Syne:wght@400;700;800&family=DM+Sans:wght@300;400;500&display=swap');
@@ -480,6 +497,24 @@
   </div>
 </div>
 
+
+<!-- Banner installa PWA -->
+<div id="installBanner" style="display:none; position:fixed; bottom:0; left:0; right:0; z-index:200;
+  background:linear-gradient(135deg,#1c1c26,#13131a); border-top:1px solid #2a2a3a;
+  padding:16px 20px; align-items:center; gap:14px;">
+  <div style="font-size:32px">🏷️</div>
+  <div style="flex:1">
+    <div style="font-family:Syne,sans-serif; font-weight:700; font-size:15px; color:#f0f0f5">Installa Sconti Subito</div>
+    <div style="font-size:12px; color:#6b6b80; margin-top:2px">Aggiungila alla schermata home</div>
+  </div>
+  <button onclick="document.getElementById('installBanner').style.display='none'"
+    style="background:none;border:none;color:#6b6b80;font-size:20px;cursor:pointer;padding:4px">✕</button>
+  <button onclick="installApp()"
+    style="background:linear-gradient(135deg,#00e676,#00b248); border:none; border-radius:10px;
+    padding:10px 18px; font-family:Syne,sans-serif; font-weight:700; font-size:14px;
+    color:#000; cursor:pointer; white-space:nowrap">Installa</button>
+</div>
+
 <!-- Toast -->
 <div class="toast" id="toast"></div>
 
@@ -497,8 +532,9 @@
       logger: () => {}
     });
     await worker.setParameters({
-      tessedit_char_whitelist: '0123456789.,€$% ',
-      tessedit_pageseg_mode: '7',
+      tessedit_char_whitelist: '0123456789.,%€$ ',
+      tessedit_pageseg_mode: '6', // blocco uniforme di testo
+      tessedit_ocr_engine_mode: '1',
     });
     workerPronto = true;
   }
@@ -560,22 +596,31 @@
 
     if (!video.srcObject) { mostraToast('Camera non pronta'); return; }
 
-    // Cattura frame
+    // Cattura frame intero
     canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;
     const ctx = canvas.getContext('2d');
     ctx.drawImage(video, 0, 0);
 
-    // Crop zona centrale (mirino)
-    const cropW = canvas.width * 0.78;
-    const cropH = 130 * (canvas.height / video.clientHeight);
-    const cropX = (canvas.width - cropW) / 2;
-    const cropY = canvas.height * 0.5 - cropH * 1.1;
+    // Crop preciso basato sulla posizione reale del mirino sullo schermo
+    const scaleX = video.videoWidth / video.clientWidth;
+    const scaleY = video.videoHeight / video.clientHeight;
+    const vfEl = document.getElementById('viewfinder');
+    const vfRect = vfEl.getBoundingClientRect();
+    const videoRect = document.getElementById('videoEl').getBoundingClientRect();
+    const cropX = Math.max(0, (vfRect.left - videoRect.left) * scaleX);
+    const cropY = Math.max(0, (vfRect.top - videoRect.top) * scaleY);
+    const cropW = Math.min(vfRect.width * scaleX, canvas.width - cropX);
+    const cropH = Math.min(vfRect.height * scaleY, canvas.height - cropY);
 
+    // Upscaling 3x + scala di grigi + alto contrasto per OCR piu preciso
+    const scale = 3;
     const cropCanvas = document.createElement('canvas');
-    cropCanvas.width = cropW;
-    cropCanvas.height = cropH;
-    cropCanvas.getContext('2d').drawImage(canvas, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
+    cropCanvas.width = cropW * scale;
+    cropCanvas.height = cropH * scale;
+    const cropCtx = cropCanvas.getContext('2d');
+    cropCtx.filter = 'grayscale(100%) contrast(220%) brightness(115%)';
+    cropCtx.drawImage(canvas, cropX, cropY, cropW, cropH, 0, 0, cropCanvas.width, cropCanvas.height);
 
     // Mostra spinner
     btn.innerHTML = '<div class="spinner"></div>';
@@ -625,28 +670,34 @@
 
   // ── ESTRAI NUMERI ──
   function estraiNumeri(testo) {
+    console.log('OCR letto:', testo);
+    // Correzioni comuni OCR
     let pulito = testo
+      .replace(/[oO]/g, '0')
       .replace(/,/g, '.')
       .replace(/[€$£%°]/g, ' ')
-      .replace(/[^\d.\s]/g, ' ');
+      .replace(/[^\d.\s]/g, ' ')
+      .replace(/\s+/g, ' ').trim();
 
-    const regex = /\b\d+(?:\.\d{1,2})?\b/g;
+    const regex = /\b(\d{1,6}(?:\.\d{1,2})?)\b/g;
     const matches = [...pulito.matchAll(regex)];
     let risultati = new Set();
 
     for (const m of matches) {
-      const val = parseFloat(m[0]);
+      const val = parseFloat(m[1]);
       if (!val || isNaN(val)) continue;
+      if (val === 2024 || val === 2025 || val === 2026) continue;
 
       if (tipoCorrente === 'sconto' && val >= 1 && val <= 100) {
-        risultati.add(val);
-      } else if (tipoCorrente === 'prezzo' && val >= 0.01 && val <= 99999) {
-        risultati.add(val);
+        risultati.add(Math.round(val));
+      } else if (tipoCorrente === 'prezzo' && val >= 0.10 && val <= 99999) {
+        risultati.add(Math.round(val * 100) / 100);
       }
     }
 
     return [...risultati].sort((a, b) => a - b);
   }
+
 
   // ── MOSTRA NUMERI ──
   function mostraNumeriFiltrati(numeri) {
@@ -726,6 +777,43 @@
     t.classList.add('show');
     setTimeout(() => t.classList.remove('show'), 2500);
   }
+
+  // ── PWA INSTALL ──
+  let deferredPrompt = null;
+  window.addEventListener('beforeinstallprompt', (e) => {
+    e.preventDefault();
+    deferredPrompt = e;
+    // Mostra banner installa
+    document.getElementById('installBanner').style.display = 'flex';
+  });
+
+  window.addEventListener('appinstalled', () => {
+    document.getElementById('installBanner').style.display = 'none';
+    mostraToast('✅ App installata!');
+  });
+
+  function installApp() {
+    if (deferredPrompt) {
+      deferredPrompt.prompt();
+      deferredPrompt.userChoice.then(() => {
+        deferredPrompt = null;
+        document.getElementById('installBanner').style.display = 'none';
+      });
+    }
+  }
+
+  // Registra Service Worker inline
+  if ('serviceWorker' in navigator) {
+    const swCode = `
+      self.addEventListener('install', e => self.skipWaiting());
+      self.addEventListener('activate', e => clients.claim());
+      self.addEventListener('fetch', e => e.respondWith(fetch(e.request).catch(() => new Response(''))));
+    `;
+    const blob = new Blob([swCode], {type: 'application/javascript'});
+    const swUrl = URL.createObjectURL(blob);
+    navigator.serviceWorker.register(swUrl, {scope: './'}).catch(() => {});
+  }
+
 </script>
 </body>
 </html>
